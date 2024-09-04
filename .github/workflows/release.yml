@@ -1,0 +1,67 @@
+
+name: Release Application
+on:
+  push:
+    branches: [ main ]
+
+permissions: read-all
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: SDKMAN Cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.sdkman
+          key: "${{ runner.os }}-sdkman-${{ hashFiles('.sdkmanrc') }}"
+          restore-keys: "${{ runner.os }}-sdkman-"
+      - name: Maven Cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: "${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}"
+          restore-keys: "${{ runner.os }}-maven-"
+      - name: Install SDKMAN
+        run: curl -s "https://get.sdkman.io?rcupdate=false" | bash
+      # Required for publishing (Maven settings.xml repository)
+      - name: Java Setup
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+      - name: Publish and Tag Application
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          source "$HOME/.sdkman/bin/sdkman-init.sh"
+          sdk env install
+          export REGISTRY_USERNAME="${GITHUB_ACTOR}"
+          export REGISTRY_PASSWORD="${GITHUB_TOKEN}"
+          export POM_VERSION="$(mvn help:evaluate -D expression=project.version -q -D forceStdout)"
+          export MAVEN_ARGS="--quiet --batch-mode"
+          export CI_PUBLISH="spring-boot.build-image.publish=true"
+          export IMG_REGISTRY="image.registry=ghcr.io/jaguililla/hexagonal_spring"
+
+          ./mvnw -D ${IMG_REGISTRY} -D ${CI_PUBLISH} deploy
+
+          git config --global user.name "${GITHUB_ACTOR}"
+          git tag -m "Release ${POM_VERSION}" "${POM_VERSION}"
+          git push --tags
+      - name: Publish Client
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          export CLIENT_PATH='target/generated-sources/openapi'
+          export CONTROLLERS_PATH='com/github/jaguililla/appointments/http/controllers'
+          export REPOSITORY='https://maven.pkg.github.com/jaguililla/hexagonal_spring'
+          export ALT_REPOSITORY="altDeploymentRepository=github::default::${REPOSITORY}"
+
+          rm -rf "${CLIENT_PATH}/src/main/java/${CONTROLLERS_PATH}"
+          mvn -f "${CLIENT_PATH}/pom.xml" -B -D ${ALT_REPOSITORY} clean deploy
